@@ -1,0 +1,40 @@
+{
+  "name": "@skillbox/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript HTTP client for SkillBox — agent runtime + eval + observability.",
+  "license": "MIT",
+  "author": "Bright Qi <bright@adoptive.co>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brightq/skillbox-sdk.git"
+  },
+  "homepage": "https://github.com/brightq/skillbox-sdk#readme",
+  "bugs": { "url": "https://github.com/brightq/skillbox-sdk/issues" },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.4"
+  },
+  "keywords": ["skillbox", "ai", "agent", "llm", "tool-calling", "sdk"],
+  "publishConfig": { "access": "public" }
+}
