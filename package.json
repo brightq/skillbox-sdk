@@ -1,6 +1,6 @@
 {
   "name": "@baobox/sdk",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "TypeScript HTTP client for BaoBox — agent runtime + eval + observability.",
   "license": "MIT",
   "author": "Bright Qi <bright@adoptive.co>",
@@ -9,7 +9,9 @@
     "url": "git+https://github.com/baobox-ai/baobox-sdk.git"
   },
   "homepage": "https://github.com/baobox-ai/baobox-sdk#readme",
-  "bugs": { "url": "https://github.com/baobox-ai/baobox-sdk/issues" },
+  "bugs": {
+    "url": "https://github.com/baobox-ai/baobox-sdk/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -20,8 +22,14 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
@@ -35,6 +43,15 @@
     "typescript": "^5.5.4",
     "vitest": "^2.1.4"
   },
-  "keywords": ["baobox", "ai", "agent", "llm", "tool-calling", "sdk"],
-  "publishConfig": { "access": "public" }
+  "keywords": [
+    "baobox",
+    "ai",
+    "agent",
+    "llm",
+    "tool-calling",
+    "sdk"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

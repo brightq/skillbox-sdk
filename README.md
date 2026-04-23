@@ -21,7 +21,8 @@ import { BaoBoxClient } from "@baobox/sdk";
 
 const bb = new BaoBoxClient({
   endpoint: "https://api.baobox.ai",
-  apiKey: process.env.BAOBOX_API_KEY!,
+  apiKey: process.env.BAOBOX_API_KEY,
+  adminSecret: process.env.BAOBOX_ADMIN_SECRET,
 });
 
 const res = await bb.chat({
@@ -50,14 +51,37 @@ const res = await bb.chat({
 
 Returns `{ response, usage: { inputTokens, outputTokens }, sessionId, meta }` where `meta` carries `requestId`, `latencyMs`, `model`, and an optional `trace` array.
 
-### Sessions
+### Sessions, Skills, Tools, Eval, Admin
+
+BaoBox now splits auth:
+
+- `apiKey` is only for `chat`
+- `adminSecret` is for `sessions`, `skills`, `tools`, `eval`, and `admin`
 
 ```typescript
 const session = await bb.sessions.create({ skillId: "sk_chase" });
 const history = await bb.sessions.messages(session.id);
+const timeline = await bb.sessions.timeline(session.id);
+
+const skill = await bb.skills.create({
+  name: "Document Chaser",
+  systemPrompt: "...",
+  tools: ["lookup_client_docs"], // SDK convenience: syncs attachments after create
+});
+
+const tool = await bb.tools.create({
+  name: "lookup_client_docs",
+  description: "...",
+  inputSchema: { type: "object" },
+  handlerType: "http",
+  handlerConfig: { url: "https://backend.example.com/tools/lookup" },
+});
+
+const run = await bb.eval.run({ skillId: skill.id });
+const stats = await bb.admin.stats.get();
 ```
 
-### Admin (requires admin token)
+### Backward compatibility
 
 ```typescript
 await bb.admin.skills.upsert({
@@ -77,10 +101,12 @@ await bb.admin.tools.upsert({
 });
 ```
 
-### Events (trace)
+`bb.admin.skills.upsert()` now targets `/api/v1/skills` and, when `tools` is provided, reconciles the skill's tool attachments via the dedicated tool-association endpoints. `bb.admin.tools.upsert()` now targets `/api/v1/tools`.
+
+### Events (timeline alias)
 
 ```typescript
-const events = await bb.events.list({ sessionId: "ses_1", limit: 50 });
+const events = await bb.events.list({ sessionId: "ses_1" });
 ```
 
 ## Error handling
@@ -107,8 +133,9 @@ Network failures surface as `BaoBoxError` with `status: 0` and `code: "NETWORK"`
 
 ```typescript
 new BaoBoxClient({
-  endpoint: "...",     // required — BaoBox API base URL
-  apiKey: "...",       // required
+  endpoint: "...",            // required — BaoBox API base URL
+  apiKey: "...",              // optional unless using chat
+  adminSecret: "...",         // optional unless using admin/runtime management APIs
   orgId: "firm_a",     // optional, observability tag
   fetch: myFetch,      // optional, injects custom fetch (tests / edge runtimes)
   timeoutMs: 30_000,   // optional, default 30s. Set 0 to disable.
