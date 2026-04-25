@@ -1,7 +1,7 @@
 export type JsonObject = Record<string, unknown>;
 
 export type BaoBoxClientOptions = {
-  /** Full URL to the BaoBox worker, e.g. "https://baobox-jv1.brightq.workers.dev" */
+  /** Full URL to the BaoBox worker, e.g. "https://baobox-nexionops.<subdomain>.workers.dev" */
   endpoint: string;
   /** API key issued by BaoBox admin. Required for `/api/v1/chat`. */
   apiKey?: string;
@@ -60,6 +60,43 @@ export type ChatResponse = {
   meta: ResponseMeta;
 };
 
+// --- Workflow ---
+//
+// Single-turn, stateless skill execution. The caller passes the full
+// conversation history every call — BaoBox doesn't persist any session
+// state for workflow runs. `clientId` and `requestId` are tenant
+// correlators that land on `call_logs` so the caller can join workflow
+// runs back to their own request log. `runId` is BaoBox-generated and
+// is the only handle for retrieving the trace timeline afterwards.
+
+export type WorkflowHistoryRole = "user" | "assistant" | "system";
+
+export type WorkflowHistoryEntry = {
+  role: WorkflowHistoryRole;
+  content: string;
+};
+
+export type WorkflowRequest = {
+  /** ID of the skill to invoke (e.g. "sk_email_chase_xxx"). */
+  skill: string;
+  /** Tenant-side client identifier; persisted on the call_logs row. */
+  clientId: string;
+  /** Tenant-side request identifier; persisted on call_logs.external_request_id. */
+  requestId: string;
+  /** The new user input for this turn. */
+  input: string;
+  /** Optional prior conversation history. Caller is responsible for state. */
+  history?: WorkflowHistoryEntry[];
+};
+
+export type WorkflowResponse = {
+  response: string;
+  /** BaoBox-generated run id (`wflow_…`). Use this to fetch the trace. */
+  runId: string;
+  usage: { inputTokens: number; outputTokens: number };
+  meta: ResponseMeta;
+};
+
 // --- Sessions ---
 
 export type Session = {
@@ -95,10 +132,13 @@ export type EventType =
   | "tool_result"
   | "error";
 
+// session_id is nullable since BaoBox migration 0017 — workflow events
+// only have run_id, not a session. run_id is the workflow correlator.
 export type Event = {
   id: string;
-  sessionId: string;
+  sessionId: string | null;
   requestId: string | null;
+  runId: string | null;
   eventType: EventType;
   content: string | null;
   metadata: JsonObject;
@@ -374,6 +414,13 @@ export type EvalRunResult = {
   response: string | null;
   reasoning: string | null;
   latencyMs: number;
+  /**
+   * Frozen pre-LLM input snapshot from BaoBox migration 0018 —
+   * `{ messages, tools_snapshot, options, secrets_keys }` serialized as JSON.
+   * `secrets_keys` contains key NAMES only, never values. Null when the
+   * eval execution errored before reaching the LLM call.
+   */
+  llmInputJson: string | null;
   createdAt: string;
 };
 

@@ -227,6 +227,7 @@ describe("admin auth surfaces", () => {
               id: "evt_1",
               session_id: "ses/1",
               request_id: "r_1",
+              run_id: null,
               event_type: "tool_result",
               content: null,
               metadata: "{\"ok\":true}",
@@ -254,6 +255,7 @@ describe("admin auth surfaces", () => {
         id: "evt_1",
         sessionId: "ses/1",
         requestId: "r_1",
+        runId: null,
         eventType: "tool_result",
         content: null,
         metadata: { ok: true },
@@ -457,6 +459,107 @@ describe("admin and eval helpers", () => {
     expect(result.skillId).toBe("sk/1");
     expect(result.versionA.label).toBe("A");
     expect(result.versionB.label).toBe("B");
+  });
+});
+
+describe("workflow", () => {
+  it("sends snake_case body, returns camelCase response with runId", async () => {
+    const seen: { url?: string; body?: unknown; auth?: string } = {};
+    const fetch = fakeFetch((url, init) => {
+      seen.url = url;
+      seen.body = JSON.parse(String(init.body));
+      seen.auth = (init.headers as Record<string, string>).authorization;
+      return jsonResponse(200, {
+        data: {
+          response: "drafted",
+          run_id: "wflow_abc123",
+          usage: { input_tokens: 50, output_tokens: 25 },
+        },
+        metadata: { request_id: "r_wf", latency_ms: 320, model: "MiniMax-M2.7" },
+      });
+    });
+
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      apiKey: "skb-wf",
+      fetch,
+    });
+
+    const r = await bb.workflow({
+      skill: "sk_email_chase",
+      clientId: "client_abc",
+      requestId: "nexionops_req_42",
+      input: "chase client for missing bank statements",
+      history: [
+        { role: "user", content: "draft an email" },
+        { role: "assistant", content: "Sure, here's the draft..." },
+      ],
+    });
+
+    expect(seen.url).toBe("https://api.example.com/api/v1/workflow");
+    expect(seen.auth).toBe("Bearer skb-wf");
+    expect(seen.body).toEqual({
+      skill: "sk_email_chase",
+      client_id: "client_abc",
+      request_id: "nexionops_req_42",
+      input: "chase client for missing bank statements",
+      history: [
+        { role: "user", content: "draft an email" },
+        { role: "assistant", content: "Sure, here's the draft..." },
+      ],
+    });
+    expect(r.response).toBe("drafted");
+    expect(r.runId).toBe("wflow_abc123");
+    expect(r.usage).toEqual({ inputTokens: 50, outputTokens: 25 });
+    expect(r.meta.requestId).toBe("r_wf");
+  });
+
+  it("omits history when not provided", async () => {
+    let seenBody: Record<string, unknown> = {};
+    const fetch = fakeFetch((_url, init) => {
+      seenBody = JSON.parse(String(init.body));
+      return jsonResponse(200, {
+        data: {
+          response: "ok",
+          run_id: "wflow_def",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        metadata: { request_id: "r_wf2", latency_ms: 10 },
+      });
+    });
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      apiKey: "k",
+      fetch,
+    });
+    await bb.workflow({
+      skill: "sk_x",
+      clientId: "c",
+      requestId: "rq",
+      input: "hi",
+    });
+    expect("history" in seenBody).toBe(false);
+  });
+
+  it("propagates 404 from BaoBox as BaoBoxError", async () => {
+    const fetch = fakeFetch(() =>
+      jsonResponse(404, {
+        error: { code: "NOT_FOUND", message: "Skill 'sk_missing' not found", request_id: "r_x" },
+      }),
+    );
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      apiKey: "k",
+      fetch,
+    });
+    await expect(
+      bb.workflow({
+        skill: "sk_missing",
+        clientId: "c",
+        requestId: "rq",
+        input: "hi",
+      }),
+    ).rejects.toBeInstanceOf(BaoBoxError);
   });
 });
 

@@ -53,6 +53,8 @@ import type {
   ToolUpsertRequest,
   UpdateScheduledTaskRequest,
   CreatedApiKey,
+  WorkflowRequest,
+  WorkflowResponse,
 } from "./types.js";
 
 export { BaoBoxError } from "./errors.js";
@@ -98,8 +100,9 @@ type RawSessionMessage = {
 
 type RawEvent = {
   id: string;
-  session_id: string;
+  session_id: string | null;
   request_id: string | null;
+  run_id?: string | null;
   event_type: Event["eventType"];
   content: string | null;
   metadata: unknown;
@@ -245,6 +248,8 @@ type RawEvalRunResult = {
   response: string | null;
   reasoning: string | null;
   latency_ms: number;
+  /** Added in BaoBox migration 0018; older backends omit it. */
+  llm_input_json?: string | null;
   created_at: string;
 };
 
@@ -488,6 +493,34 @@ export class BaoBoxClient {
         outputTokens: body.data.usage.output_tokens,
       },
       sessionId: body.data.session_id,
+      meta: body.meta,
+    };
+  }
+
+  // Single-turn, stateless skill execution. Caller passes the full
+  // history every call; BaoBox writes events under the returned runId
+  // and tags the call_logs row with run_type='workflow' + the tenant
+  // correlators. See `WorkflowRequest`/`WorkflowResponse` for the shape.
+  async workflow(req: WorkflowRequest): Promise<WorkflowResponse> {
+    const body = await this.requestApi<{
+      response: string;
+      run_id: string;
+      usage: { input_tokens: number; output_tokens: number };
+    }>("POST", "/api/v1/workflow", compactObject({
+      skill: req.skill,
+      client_id: req.clientId,
+      request_id: req.requestId,
+      input: req.input,
+      history: req.history,
+    }));
+
+    return {
+      response: body.data.response,
+      runId: body.data.run_id,
+      usage: {
+        inputTokens: body.data.usage.input_tokens,
+        outputTokens: body.data.usage.output_tokens,
+      },
       meta: body.meta,
     };
   }
@@ -1091,6 +1124,7 @@ function mapEvent(raw: RawEvent): Event {
     id: raw.id,
     sessionId: raw.session_id,
     requestId: raw.request_id,
+    runId: raw.run_id ?? null,
     eventType: raw.event_type,
     content: raw.content,
     metadata: toJsonObject(raw.metadata),
@@ -1263,6 +1297,7 @@ function mapEvalRunResult(raw: RawEvalRunResult): EvalRunResult {
     response: raw.response,
     reasoning: raw.reasoning,
     latencyMs: raw.latency_ms,
+    llmInputJson: raw.llm_input_json ?? null,
     createdAt: raw.created_at,
   };
 }
