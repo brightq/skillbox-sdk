@@ -563,6 +563,217 @@ describe("workflow", () => {
   });
 });
 
+describe("runs", () => {
+  it("get(runId) returns timeline with mapped events", async () => {
+    const seen: { url?: string; auth?: string } = {};
+    const fetch = fakeFetch((url, init) => {
+      seen.url = url;
+      seen.auth = (init.headers as Record<string, string>).authorization;
+      return jsonResponse(200, {
+        data: {
+          run_id: "wflow_abc123",
+          events: [
+            {
+              id: "evt_1",
+              session_id: null,
+              request_id: "req_1",
+              run_id: "wflow_abc123",
+              event_type: "llm_call_start",
+              content: null,
+              metadata: { round: 0 },
+              token_count: 0,
+              latency_ms: 0,
+              parent_event_id: null,
+              created_at: "2026-04-25T10:00:00Z",
+            },
+            {
+              id: "evt_2",
+              session_id: null,
+              request_id: "req_1",
+              run_id: "wflow_abc123",
+              event_type: "human_approved",
+              content: "Looks good",
+              metadata: { staff_user: "alice" },
+              token_count: 0,
+              latency_ms: 0,
+              parent_event_id: null,
+              created_at: "2026-04-25T10:00:30Z",
+            },
+          ],
+        },
+        metadata: { request_id: "r_runs_get", latency_ms: 5 },
+      });
+    });
+
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      adminSecret: "adm",
+      fetch,
+    });
+
+    const timeline = await bb.runs.get("wflow_abc123");
+    expect(seen.url).toBe("https://api.example.com/api/v1/admin/runs/wflow_abc123/timeline");
+    expect(seen.auth).toBe("Bearer adm");
+    expect(timeline.runId).toBe("wflow_abc123");
+    expect(timeline.events).toHaveLength(2);
+    const [first, second] = timeline.events;
+    expect(first?.eventType).toBe("llm_call_start");
+    expect(first?.runId).toBe("wflow_abc123");
+    expect(second?.eventType).toBe("human_approved");
+    expect(second?.metadata).toEqual({ staff_user: "alice" });
+  });
+
+  it("list() forwards clientId/since/limit as query params and maps response", async () => {
+    let seenUrl = "";
+    const fetch = fakeFetch((url) => {
+      seenUrl = url;
+      return jsonResponse(200, {
+        data: [
+          {
+            call_log_id: "log_1",
+            request_id: "req_1",
+            run_id: "wflow_1",
+            skill_id: "sk_chase",
+            client_id: "client_X",
+            external_request_id: "ext_1",
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+            latency_ms: 320,
+            tool_calls_count: 1,
+            status: "success",
+            error_code: null,
+            created_at: "2026-04-25T10:00:00Z",
+          },
+        ],
+        metadata: { request_id: "r_runs_list", latency_ms: 3 },
+      });
+    });
+
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      adminSecret: "adm",
+      fetch,
+    });
+
+    const runs = await bb.runs.list({
+      clientId: "client_X",
+      since: "2026-04-01T00:00:00Z",
+      limit: 25,
+    });
+
+    expect(seenUrl).toContain("/api/v1/admin/runs?");
+    expect(seenUrl).toContain("client_id=client_X");
+    expect(seenUrl).toContain("since=2026-04-01T00%3A00%3A00Z");
+    expect(seenUrl).toContain("limit=25");
+    expect(runs).toHaveLength(1);
+    const [run] = runs;
+    expect(run?.runId).toBe("wflow_1");
+    expect(run?.clientId).toBe("client_X");
+    expect(run?.externalRequestId).toBe("ext_1");
+    expect(run?.totalTokens).toBe(150);
+    expect(run?.status).toBe("success");
+  });
+
+  it("list() with no args sends no query string", async () => {
+    let seenUrl = "";
+    const fetch = fakeFetch((url) => {
+      seenUrl = url;
+      return jsonResponse(200, {
+        data: [],
+        metadata: { request_id: "r_runs_empty", latency_ms: 1 },
+      });
+    });
+
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      adminSecret: "adm",
+      fetch,
+    });
+
+    await bb.runs.list();
+    expect(seenUrl).toBe("https://api.example.com/api/v1/admin/runs");
+  });
+
+  it("appendEvent posts snake_case body and returns mapped result", async () => {
+    const seen: { url?: string; body?: unknown; auth?: string } = {};
+    const fetch = fakeFetch((url, init) => {
+      seen.url = url;
+      seen.body = JSON.parse(String(init.body));
+      seen.auth = (init.headers as Record<string, string>).authorization;
+      return jsonResponse(201, {
+        data: {
+          id: "evt_appended_1",
+          run_id: "wflow_abc123",
+          event_type: "human_approved",
+        },
+        metadata: { request_id: "r_append", latency_ms: 2 },
+      });
+    });
+
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      adminSecret: "adm",
+      fetch,
+    });
+
+    const result = await bb.runs.appendEvent("wflow_abc123", {
+      eventType: "human_approved",
+      content: "Looks good — sending.",
+      metadata: { staff_user: "alice", reviewed_at: "2026-04-25T10:00:30Z" },
+    });
+
+    expect(seen.url).toBe("https://api.example.com/api/v1/admin/runs/wflow_abc123/events");
+    expect(seen.auth).toBe("Bearer adm");
+    expect(seen.body).toEqual({
+      event_type: "human_approved",
+      content: "Looks good — sending.",
+      metadata: { staff_user: "alice", reviewed_at: "2026-04-25T10:00:30Z" },
+    });
+    expect(result.id).toBe("evt_appended_1");
+    expect(result.runId).toBe("wflow_abc123");
+    expect(result.eventType).toBe("human_approved");
+  });
+
+  it("appendEvent omits optional fields when not provided", async () => {
+    let seenBody: Record<string, unknown> = {};
+    const fetch = fakeFetch((_url, init) => {
+      seenBody = JSON.parse(String(init.body));
+      return jsonResponse(201, {
+        data: {
+          id: "evt_min",
+          run_id: "wflow_min",
+          event_type: "external_send",
+        },
+        metadata: { request_id: "r_min", latency_ms: 1 },
+      });
+    });
+
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      adminSecret: "adm",
+      fetch,
+    });
+
+    await bb.runs.appendEvent("wflow_min", { eventType: "external_send" });
+    expect(seenBody).toEqual({ event_type: "external_send" });
+  });
+
+  it("get() propagates 404 from BaoBox as BaoBoxError", async () => {
+    const fetch = fakeFetch(() =>
+      jsonResponse(404, {
+        error: { code: "NOT_FOUND", message: "Run 'wflow_x' not found", request_id: "r_404" },
+      }),
+    );
+    const bb = new BaoBoxClient({
+      endpoint: "https://api.example.com",
+      adminSecret: "adm",
+      fetch,
+    });
+    await expect(bb.runs.get("wflow_x")).rejects.toBeInstanceOf(BaoBoxError);
+  });
+});
+
 describe("timeout", () => {
   it("aborts after timeoutMs and throws TIMEOUT error", async () => {
     const fetch: typeof globalThis.fetch = (_url, init) =>
@@ -585,5 +796,122 @@ describe("timeout", () => {
       expect(err).toBeInstanceOf(BaoBoxError);
       expect((err as BaoBoxError).code).toBe("TIMEOUT");
     }
+  });
+});
+
+describe("tools.invoke (M5 — direct tool dispatch)", () => {
+  it("POSTs the right payload, sends the API key, maps the response", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit = {};
+    const fetch = fakeFetch((url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return jsonResponse(200, {
+        data: {
+          tool_call_id: "tcl_abc123",
+          status: "SUCCESS",
+          result: { providerMessageId: "msg_42", status: "SUCCESS" },
+        },
+        metadata: { request_id: "req_a", latency_ms: 17 },
+      });
+    });
+    const bb = new BaoBoxClient({
+      endpoint: "https://baobox.example.com",
+      apiKey: "skb_test",
+      fetch,
+    });
+
+    const result = await bb.tools.invoke({
+      tool: "send_email",
+      tenantId: "tnt_a",
+      inputs: { to: "c@example.com", subject: "Hi", body: "B" },
+    });
+
+    expect(capturedUrl).toBe("https://baobox.example.com/api/v1/tools/invoke");
+    expect((capturedInit.headers as Record<string, string>).authorization).toBe(
+      "Bearer skb_test",
+    );
+    expect((capturedInit.headers as Record<string, string>)["content-type"]).toBe(
+      "application/json",
+    );
+    const sentBody = JSON.parse(String(capturedInit.body));
+    expect(sentBody).toEqual({
+      tool: "send_email",
+      tenant_id: "tnt_a",
+      inputs: { to: "c@example.com", subject: "Hi", body: "B" },
+    });
+    expect(result.toolCallId).toBe("tcl_abc123");
+    expect(result.status).toBe("SUCCESS");
+    expect(result.result).toEqual({ providerMessageId: "msg_42", status: "SUCCESS" });
+    expect(result.meta.requestId).toBe("req_a");
+    expect(result.meta.latencyMs).toBe(17);
+  });
+
+  it("translates a 403 tenant-scope error into BaoBoxError", async () => {
+    const fetch = fakeFetch(() =>
+      jsonResponse(403, {
+        error: {
+          code: "FORBIDDEN",
+          message: "API key bound to tenant 't_a' cannot invoke for tenant 't_b'",
+          request_id: "req_x",
+        },
+      }),
+    );
+    const bb = new BaoBoxClient({
+      endpoint: "https://baobox.example.com",
+      apiKey: "skb_test",
+      fetch,
+    });
+
+    try {
+      await bb.tools.invoke({ tool: "send_email", tenantId: "t_b", inputs: {} });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(BaoBoxError);
+      expect((err as BaoBoxError).status).toBe(403);
+      expect((err as BaoBoxError).code).toBe("FORBIDDEN");
+    }
+  });
+
+  it("translates a 500 handler error into BaoBoxError (e.g. NO_INTEGRATION)", async () => {
+    const fetch = fakeFetch(() =>
+      jsonResponse(500, {
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "An internal error occurred",
+          request_id: "req_y",
+        },
+      }),
+    );
+    const bb = new BaoBoxClient({
+      endpoint: "https://baobox.example.com",
+      apiKey: "skb_test",
+      fetch,
+    });
+
+    try {
+      await bb.tools.invoke({ tool: "send_email", tenantId: "t_a", inputs: {} });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(BaoBoxError);
+      expect((err as BaoBoxError).status).toBe(500);
+    }
+  });
+
+  it("refuses to invoke when only adminSecret is configured (no apiKey)", async () => {
+    const fetch = fakeFetch(() =>
+      jsonResponse(200, {
+        data: { tool_call_id: "x", status: "SUCCESS", result: null },
+        metadata: {},
+      }),
+    );
+    const bb = new BaoBoxClient({
+      endpoint: "https://baobox.example.com",
+      adminSecret: "admin",
+      fetch,
+    });
+    await expect(
+      bb.tools.invoke({ tool: "send_email", tenantId: "t_a", inputs: {} }),
+    ).rejects.toThrow(/apiKey required/);
   });
 });

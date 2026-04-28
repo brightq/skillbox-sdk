@@ -97,6 +97,67 @@ export type WorkflowResponse = {
   meta: ResponseMeta;
 };
 
+// --- Runs (workflow-run admin views + caller-pushed events) ---
+//
+// Added in SDK 0.4.0 against BaoBox's `/api/v1/admin/runs/*` surface.
+// Use these to:
+//  - render a per-run trace in your front-end (`get`)
+//  - list a tenant's recent workflow runs (`list`)
+//  - inject human/external lifecycle events into a run's timeline
+//    (`appendEvent`) so the trace tells the full story.
+
+export type WorkflowRunSummary = {
+  /** call_logs.id — the row that recorded this run. */
+  callLogId: string;
+  /** Internal request id (BaoBox-generated for observability correlation). */
+  requestId: string;
+  /** BaoBox-generated run id. Use this with `runs.get` and `runs.appendEvent`. */
+  runId: string | null;
+  skillId: string | null;
+  clientId: string | null;
+  /** The caller-supplied request id passed in the original `workflow()` call. */
+  externalRequestId: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  latencyMs: number;
+  toolCallsCount: number;
+  status: string;
+  errorCode: string | null;
+  createdAt: string;
+};
+
+export type WorkflowRunTimeline = {
+  runId: string;
+  events: Event[];
+};
+
+export type WorkflowRunListRequest = {
+  /** Tenant-side identifier originally passed in the workflow() call. */
+  clientId?: string;
+  /** ISO timestamp lower bound (e.g. "2026-04-01T00:00:00Z"). */
+  since?: string;
+  /** Defaults to 50 server-side. Capped at 200. */
+  limit?: number;
+};
+
+export type AppendRunEventRequest = {
+  eventType: CallerPushedEventType;
+  /** Optional human-readable description (e.g. the email subject sent). */
+  content?: string;
+  /** Free-form structured data (staff_user, message_id, attachment_count, …). */
+  metadata?: JsonObject;
+  /** Chain this event under another event in the same run, if relevant. */
+  parentEventId?: string;
+};
+
+export type AppendedRunEvent = {
+  /** New event id (`evt_…`). */
+  id: string;
+  runId: string;
+  eventType: CallerPushedEventType;
+};
+
 // --- Sessions ---
 
 export type Session = {
@@ -122,6 +183,11 @@ export type SessionMessage = {
   createdAt: string;
 };
 
+// AI events emitted by the BaoBox runtime + caller-pushed events for
+// human-in-the-loop or external steps. The five `human_*` / `external_*`
+// types are appended via `client.runs.appendEvent` so a workflow run's
+// timeline can interleave AI activity with surrounding human/external
+// state transitions.
 export type EventType =
   | "user_message"
   | "assistant_message"
@@ -130,7 +196,25 @@ export type EventType =
   | "llm_call_end"
   | "tool_call"
   | "tool_result"
-  | "error";
+  | "error"
+  | "human_review_started"
+  | "human_approved"
+  | "human_rejected"
+  | "external_send"
+  | "external_reply_received";
+
+/**
+ * Event types a caller is allowed to push onto a run's timeline via
+ * `client.runs.appendEvent`. The runtime-only types (`llm_call_*`,
+ * `tool_*`, `*_message`, `error`) are emitted by BaoBox itself and are
+ * never accepted from external callers.
+ */
+export type CallerPushedEventType =
+  | "human_review_started"
+  | "human_approved"
+  | "human_rejected"
+  | "external_send"
+  | "external_reply_received";
 
 // session_id is nullable since BaoBox migration 0017 — workflow events
 // only have run_id, not a session. run_id is the workflow correlator.
@@ -470,4 +554,34 @@ export type EvalCompare = {
     label: string;
     dimensions: Record<string, unknown>[];
   };
+};
+
+// ─── Direct tool invocation (M4 endpoint, SDK 0.5.0) ─────────────────────────
+
+/**
+ * Request body for `client.tools.invoke()`. Dispatches a builtin tool by
+ * name through `POST /api/v1/tools/invoke`. The supplied API key must be
+ * either tenant-bound to `tenantId` or a cross-tenant admin-issued key.
+ */
+export type ToolInvokeRequest = {
+  /** Builtin tool name registered in BaoBox's catalog (e.g. "send_email"). */
+  tool: string;
+  /** Caller's tenant scoping. The handler resolves any per-tenant integration internally. */
+  tenantId: string;
+  /** Tool-specific input payload. Validated server-side by the handler's Zod schema. */
+  inputs: JsonObject;
+};
+
+/**
+ * Response from a successful tool invocation. Failures throw `BaoBoxError`
+ * (status 500); validation/scoping issues throw with status 400/403.
+ */
+export type ToolInvokeResponse = {
+  /** Audit-row identifier (`tcl_...`). Persists in `tool_calls` for later inspection. */
+  toolCallId: string;
+  /** Always "SUCCESS" on the resolved promise — failures throw. */
+  status: "SUCCESS";
+  /** Handler-specific result payload. Shape depends on the tool. */
+  result: unknown;
+  meta: ResponseMeta;
 };

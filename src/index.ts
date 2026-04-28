@@ -2,8 +2,11 @@ import { BaoBoxError } from "./errors.js";
 import type {
   AdminStats,
   ApiKey,
+  AppendedRunEvent,
+  AppendRunEventRequest,
   AttachToolResult,
   BaoBoxClientOptions,
+  CallerPushedEventType,
   CallLogRow,
   ChatRequest,
   ChatResponse,
@@ -50,11 +53,16 @@ import type {
   SkillWithFiles,
   Tool,
   ToolCreateRequest,
+  ToolInvokeRequest,
+  ToolInvokeResponse,
   ToolUpsertRequest,
   UpdateScheduledTaskRequest,
   CreatedApiKey,
   WorkflowRequest,
   WorkflowResponse,
+  WorkflowRunListRequest,
+  WorkflowRunSummary,
+  WorkflowRunTimeline,
 } from "./types.js";
 
 export { BaoBoxError } from "./errors.js";
@@ -266,6 +274,34 @@ type RawEvalStats = {
   trend: Record<string, unknown>[];
 };
 
+type RawWorkflowRunSummary = {
+  call_log_id: string;
+  request_id: string;
+  run_id: string | null;
+  skill_id: string | null;
+  client_id: string | null;
+  external_request_id: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  tool_calls_count: number;
+  status: string;
+  error_code: string | null;
+  created_at: string;
+};
+
+type RawWorkflowRunTimeline = {
+  run_id: string;
+  events: RawEvent[];
+};
+
+type RawAppendedRunEvent = {
+  id: string;
+  run_id: string;
+  event_type: CallerPushedEventType;
+};
+
 type RawEvalCompare = {
   skill_id: string;
   version_a: {
@@ -340,6 +376,13 @@ export class BaoBoxClient {
     get: (toolId: string) => Promise<Tool>;
     create: (req: ToolCreateRequest) => Promise<Tool>;
     delete: (toolId: string) => Promise<DeleteResult>;
+    /**
+     * Direct tool invocation (POST /api/v1/tools/invoke). API-key gated;
+     * the key's tenant scope (if any) must match `tenantId`. The handler
+     * resolves any per-tenant integration internally — callers never
+     * touch decrypted credentials.
+     */
+    invoke: (req: ToolInvokeRequest) => Promise<ToolInvokeResponse>;
     skills: {
       list: (skillId: string) => Promise<Tool[]>;
       attach: (skillId: string, toolId: string) => Promise<AttachToolResult>;
@@ -367,6 +410,17 @@ export class BaoBoxClient {
   };
   public readonly events: {
     list: (req: EventListRequest) => Promise<Event[]>;
+  };
+  public readonly runs: {
+    /** Fetch the full event timeline for a single workflow run. */
+    get: (runId: string) => Promise<WorkflowRunTimeline>;
+    /** List recent workflow runs, optionally filtered by `clientId` and `since`. */
+    list: (req?: WorkflowRunListRequest) => Promise<WorkflowRunSummary[]>;
+    /**
+     * Append a human-in-the-loop / external lifecycle event onto a run's
+     * timeline so the trace shows the full story alongside the AI events.
+     */
+    appendEvent: (runId: string, req: AppendRunEventRequest) => Promise<AppendedRunEvent>;
   };
 
   constructor(opts: BaoBoxClientOptions) {
@@ -442,6 +496,7 @@ export class BaoBoxClient {
       get: (id) => this.getTool(id),
       create: (req) => this.createTool(req),
       delete: (id) => this.deleteTool(id),
+      invoke: (req) => this.invokeTool(req),
       skills: {
         list: (skillId) => this.listSkillTools(skillId),
         attach: (skillId, toolId) => this.attachToolToSkill(skillId, toolId),
@@ -471,6 +526,12 @@ export class BaoBoxClient {
 
     this.events = {
       list: (req) => this.listEvents(req),
+    };
+
+    this.runs = {
+      get: (runId) => this.getRunTimeline(runId),
+      list: (req) => this.listRuns(req),
+      appendEvent: (runId, req) => this.appendRunEvent(runId, req),
     };
   }
 
@@ -709,6 +770,24 @@ export class BaoBoxClient {
       `/api/v1/tools/${encodeURIComponent(toolId)}`,
     );
     return body.data;
+  }
+
+  private async invokeTool(req: ToolInvokeRequest): Promise<ToolInvokeResponse> {
+    const body = await this.requestApi<{
+      tool_call_id: string;
+      status: "SUCCESS";
+      result: unknown;
+    }>("POST", "/api/v1/tools/invoke", {
+      tool: req.tool,
+      tenant_id: req.tenantId,
+      inputs: req.inputs,
+    });
+    return {
+      toolCallId: body.data.tool_call_id,
+      status: body.data.status,
+      result: body.data.result,
+      meta: body.meta,
+    };
   }
 
   private async listSkillTools(skillId: string): Promise<Tool[]> {
@@ -955,6 +1034,50 @@ export class BaoBoxClient {
   private async listEvents(req: EventListRequest): Promise<Event[]> {
     const timeline = await this.getSessionTimeline(req.sessionId);
     return timeline.events;
+  }
+
+  private async getRunTimeline(runId: string): Promise<WorkflowRunTimeline> {
+    const body = await this.requestAdmin<RawWorkflowRunTimeline>(
+      "GET",
+      `/api/v1/admin/runs/${encodeURIComponent(runId)}/timeline`,
+    );
+    return {
+      runId: body.data.run_id,
+      events: body.data.events.map(mapEvent),
+    };
+  }
+
+  private async listRuns(req?: WorkflowRunListRequest): Promise<WorkflowRunSummary[]> {
+    const body = await this.requestAdmin<RawWorkflowRunSummary[]>(
+      "GET",
+      appendQuery("/api/v1/admin/runs", {
+        client_id: req?.clientId,
+        since: req?.since,
+        limit: req?.limit !== undefined ? String(req.limit) : undefined,
+      }),
+    );
+    return body.data.map(mapWorkflowRunSummary);
+  }
+
+  private async appendRunEvent(
+    runId: string,
+    req: AppendRunEventRequest,
+  ): Promise<AppendedRunEvent> {
+    const body = await this.requestAdmin<RawAppendedRunEvent>(
+      "POST",
+      `/api/v1/admin/runs/${encodeURIComponent(runId)}/events`,
+      compactObject({
+        event_type: req.eventType,
+        content: req.content,
+        metadata: req.metadata,
+        parent_event_id: req.parentEventId,
+      }),
+    );
+    return {
+      id: body.data.id,
+      runId: body.data.run_id,
+      eventType: body.data.event_type,
+    };
   }
 
   private async syncSkillTools(skillId: string, desiredToolIds: string[]): Promise<void> {
@@ -1282,6 +1405,25 @@ function mapEvalRun(raw: RawEvalRun): Omit<EvalRunWithResults, "results"> {
     metadata: raw.metadata,
     createdAt: raw.created_at,
     completedAt: raw.completed_at,
+  };
+}
+
+function mapWorkflowRunSummary(raw: RawWorkflowRunSummary): WorkflowRunSummary {
+  return {
+    callLogId: raw.call_log_id,
+    requestId: raw.request_id,
+    runId: raw.run_id,
+    skillId: raw.skill_id,
+    clientId: raw.client_id,
+    externalRequestId: raw.external_request_id,
+    inputTokens: raw.input_tokens,
+    outputTokens: raw.output_tokens,
+    totalTokens: raw.total_tokens,
+    latencyMs: raw.latency_ms,
+    toolCallsCount: raw.tool_calls_count,
+    status: raw.status,
+    errorCode: raw.error_code,
+    createdAt: raw.created_at,
   };
 }
 

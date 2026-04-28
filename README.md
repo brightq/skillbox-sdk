@@ -133,6 +133,65 @@ const events = await bb.events.list({ sessionId: "ses_1" });
 
 Each `Event` carries `sessionId: string | null` and `runId: string | null` (added in 0.3.0). Chat events have `sessionId` set; workflow events have `runId` set. Both share the same shape so a single consumer can render either timeline.
 
+### Runs (workflow trace + human-in-the-loop) — added in 0.4.0
+
+Wraps `/api/v1/admin/runs/*`, the admin surface for workflow-run observability. Three things you can do:
+
+1. **Get a run's full timeline** — every LLM call, tool call, error, plus any caller-pushed human/external events under the same `run_id`:
+
+```typescript
+const timeline = await bb.runs.get("wflow_abc123");
+//   timeline.runId  = "wflow_abc123"
+//   timeline.events = Event[] in chronological order
+```
+
+2. **List recent workflow runs** — typically scoped to one tenant client so a front-end can render an "AI activity" tab per business client:
+
+```typescript
+const runs = await bb.runs.list({
+  clientId: "cli_01HXYZ",
+  since: "2026-04-01T00:00:00Z",
+  limit: 25,
+});
+```
+
+3. **Append a human-in-the-loop or external lifecycle event** onto a run's timeline. The five accepted types are `human_review_started`, `human_approved`, `human_rejected`, `external_send`, `external_reply_received`. The runtime-only types (`llm_call_*`, `tool_*`, `*_message`, `error`) are emitted by BaoBox itself and are rejected if a caller pushes them.
+
+```typescript
+await bb.runs.appendEvent("wflow_abc123", {
+  eventType: "human_approved",
+  content: "Looks good — sending.",
+  metadata: { staff_user: "alice", reviewed_at: new Date().toISOString() },
+});
+```
+
+Append-event is the lightweight way to make a run's trace tell the full story: BaoBox writes the AI events; your backend writes the human/external events; the timeline interleaves them by `created_at` so the rendered trace shows the complete sequence (draft → human review → approve → external send → reply received → assess) without a thread abstraction.
+
+### Tools (direct invocation) — added in 0.5.0
+
+`bb.tools.invoke()` dispatches a builtin BaoBox tool through `POST /api/v1/tools/invoke` without going through the skill runtime. This is the path workflow apps use after a human approves an action — the LLM produces a draft, the human approves, your code calls the tool directly.
+
+```typescript
+const result = await bb.tools.invoke({
+  tool: "send_email",
+  tenantId: "firm_yongxin",
+  inputs: {
+    to: "client@example.com",
+    subject: "Documents required",
+    body: "Hi — please send the BAS workpapers when you get a chance.",
+    replyTo: "yongxin_ops@inbound.tenant.nexionops.com",
+    headers: { "X-NexionOps-Request-Id": "req_abc" },
+  },
+});
+//   result.toolCallId = "tcl_..."        — audit-row identifier
+//   result.status     = "SUCCESS"
+//   result.result     = handler payload  (e.g. { providerMessageId, status })
+```
+
+The API key passed to the client must either be tenant-bound to `tenantId` or be a cross-tenant admin-issued key. Tenant scope mismatches return `BaoBoxError` with `status: 403`. Handler-side failures (e.g. no integration configured for the tenant) come back as `BaoBoxError` with `status: 500`.
+
+The handler resolves any per-tenant integration internally — your code never touches decrypted credentials. For the `send_email` tool, configure a Workspace integration once via `POST /api/v1/admin/integrations` (admin-secret gated), and every subsequent invoke for that tenant routes through it.
+
 ## Error handling
 
 Every non-2xx response throws `BaoBoxError`:
@@ -171,7 +230,7 @@ new BaoBoxClient({
 Publishing is **tag-driven via GitHub Actions** (`.github/workflows/publish.yml`). There is no local `npm login` / `npm publish` flow — auth lives in the `NPM_TOKEN` repo secret, and pushes use `--provenance` for npm provenance attestation. The full release sequence:
 
 ```bash
-# 1. Bump version in package.json (e.g. 0.3.0 → 0.4.0).
+# 1. Bump version in package.json (e.g. 0.4.0 → 0.5.0).
 # 2. Update the README + CHANGELOG if anything user-facing moved.
 # 3. Commit on main and push.
 git add package.json README.md src
